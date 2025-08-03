@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>Stock Market Predictor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input, button {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Stock Market Predictor</h1>
+        <form id="stockForm">
+            <div class="form-group">
+                <label for="stockSymbol">Stock Symbol:</label>
+                <input type="text" id="stockSymbol" name="stockSymbol" required 
+                       placeholder="Enter stock symbol (e.g., AAPL)">
+            </div>
+            <div class="form-group">
+                <label for="startDate">Start Date:</label>
+                <input type="date" id="startDate" name="startDate" required>
+            </div>
+            <div class="form-group">
+                <label for="endDate">End Date:</label>
+                <input type="date" id="endDate" name="endDate" required>
+            </div>
+            <button type="submit">Predict Stock Trend</button>
+        </form>
+        <div id="result" style="margin-top: 20px;"></div>
+    </div>
+
+    <script>
+        document.getElementById('stockForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const stockSymbol = document.getElementById('stockSymbol').value;
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            
+            // Here you can add the logic to handle the form submission
+            document.getElementById('result').innerHTML = 
+                `Analyzing ${stockSymbol} from ${startDate} to ${endDate}...`;
+        });
+
+        // Set default dates
+        const today = new Date();
+        const oneMonthAgo = new Date();
+        oneMonthAgo.setMonth(today.getMonth() - 1);
+        
+        document.getElementById('endDate').value = today.toISOString().split('T')[0];
+        document.getElementById('startDate').value = oneMonthAgo.toISOString().split('T')[0];
+    </script>
+</body>
+</html>
