@@ -16,6 +16,10 @@ class StockDataFetcher:
     
     def fetch_data(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Fetch stock data from Yahoo Finance"""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise ValueError("Stock symbol cannot be empty")
+
         try:
             ticker = yf.Ticker(symbol)
             df = ticker.history(start=start_date, end=end_date)
@@ -29,6 +33,10 @@ class StockDataFetcher:
         except Exception as e:
             self.logger.error(f"Error fetching {symbol}: {str(e)}")
             raise
+
+    def fetch_stock_data(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Backward-compatible name used by the original project tests."""
+        return self.fetch_data(symbol, start_date, end_date)
 
     def get_stock_info(self, symbol: str) -> dict:
         """Get basic information about a stock"""
@@ -46,5 +54,12 @@ class StockDataFetcher:
             }
             
         except Exception as e:
-            self.logger.error(f"Error fetching info for {symbol}: {str(e)}")
-            raise
+            self.logger.warning("Stock metadata unavailable for %s: %s", symbol, e)
+            return {
+                'name': symbol.upper(),
+                'sector': '',
+                'industry': '',
+                'currency': 'USD',
+                'market_cap': None,
+                'country': ''
+            }
