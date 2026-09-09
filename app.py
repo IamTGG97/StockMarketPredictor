@@ -1,9 +1,13 @@
+import os
+
 from flask import Flask, jsonify, render_template, request
 from utils.market_api import StockDataFetcher
 from utils.data_processor import forecast_prices, prepare_price_data
+from utils.storage import S3DataStore
 
 app = Flask(__name__, template_folder='template')
 fetcher = StockDataFetcher()
+s3_store = S3DataStore(os.environ["S3_BUCKET_NAME"]) if os.getenv("S3_BUCKET_NAME") else None
 
 
 @app.route('/')
@@ -23,12 +27,14 @@ def get_stock_data():
         df = fetcher.fetch_data(symbol, start_date, end_date)
         prices = prepare_price_data(df)
         forecast_days = request.args.get('forecast_days', default=5, type=int)
+        storage = s3_store.save_market_data(symbol, df) if s3_store else None
 
         return jsonify({
             'data': prices.to_dict(orient='records'),
             'info': fetcher.get_stock_info(symbol),
             'prediction': forecast_prices(df, forecast_days),
-            'news': {'status': 'unavailable', 'message': 'News sentiment is not configured yet.'}
+            'news': {'status': 'unavailable', 'message': 'News sentiment is not configured yet.'},
+            'storage': storage
         })
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
