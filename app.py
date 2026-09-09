@@ -2,7 +2,7 @@ from flask import Flask, jsonify, render_template, request
 from utils.market_api import StockDataFetcher
 from utils.data_processor import forecast_prices, prepare_price_data
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='template')
 fetcher = StockDataFetcher()
 
 
