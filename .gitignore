@@ -5,3 +5,5 @@ venv/
 .env
 .aws/
 .pytest_cache/
+.lambda-build/
+lambda-deployment.zip
