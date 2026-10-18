@@ -32,7 +32,28 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Step 2: attach the basic execution policy and S3 access"
 aws iam attach-role-policy --role-name $RoleName --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole | Out-Null
-aws iam attach-role-policy --role-name $RoleName --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess | Out-Null
+$fullS3AccessArn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+$attachedPolicies = aws iam list-attached-role-policies --role-name $RoleName --query "AttachedPolicies[?PolicyArn=='$fullS3AccessArn'].PolicyArn" --output text
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to check the role's attached policies."
+}
+if ($attachedPolicies -and $attachedPolicies -ne "None") {
+    aws iam detach-role-policy --role-name $RoleName --policy-arn $fullS3AccessArn | Out-Null
+}
+$s3WritePolicy = @{
+    Version = "2012-10-17"
+    Statement = @(
+        @{
+            Effect = "Allow"
+            Action = @("s3:PutObject")
+            Resource = "arn:aws:s3:::$BucketName/*"
+        }
+    )
+} | ConvertTo-Json -Depth 5 -Compress
+aws iam put-role-policy `
+    --role-name $RoleName `
+    --policy-name "stock-predictor-s3-write" `
+    --policy-document $s3WritePolicy | Out-Null
 
 $roleArn = aws iam get-role --role-name $RoleName --query 'Role.Arn' --output text
 
