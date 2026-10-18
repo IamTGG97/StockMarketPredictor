@@ -3,10 +3,41 @@ param(
     [string]$RoleName = "stock-predictor-lambda-role",
     [string]$BucketName = "",
     [string]$Region = "us-east-2",
-    [string]$ZipPath = (Join-Path $PSScriptRoot "..\lambda-deployment.zip")
+    [string]$ZipPath = (Join-Path $PSScriptRoot "..\lambda-deployment.zip"),
+    [string]$S3Key = "lambda-deployments/stock-ingest-lambda.zip"
 )
 
 $ErrorActionPreference = "Stop"
+
+function Invoke-AwsCli {
+    param(
+        [string[]]$CliArgs,
+        [switch]$AllowFailure
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & aws @CliArgs 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        throw "Could not run the AWS CLI: $_"
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    $outputText = ($output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+    if ($exitCode -ne 0 -and -not $AllowFailure) {
+        throw "AWS CLI command failed (exit code $exitCode): aws $($CliArgs -join ' ')`n$outputText"
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = $outputText.Trim()
+    }
+}
 
 if (-not $BucketName -or $BucketName -eq "YOUR_S3_BUCKET_NAME") {
     throw "Pass the name of your existing S3 bucket with -BucketName."
@@ -17,72 +48,61 @@ if (-not (Test-Path $ZipPath)) {
 }
 $ZipPath = (Resolve-Path $ZipPath).Path
 
-$accountId = (aws sts get-caller-identity --query Account --output text)
+Write-Host "Uploading the deployment package to S3"
+$null = Invoke-AwsCli -CliArgs @("s3", "cp", $ZipPath, "s3://$BucketName/$S3Key", "--region", $Region)
+
+$identity = Invoke-AwsCli -CliArgs @("sts", "get-caller-identity", "--query", "Account", "--output", "text")
+$accountId = $identity.Output
 if (-not $accountId) {
     throw "Unable to find the AWS account ID. Run 'aws configure' first."
 }
 
-Write-Host "Step 1: create Lambda execution role if it does not already exist"
-$roleExists = aws iam get-role --role-name $RoleName 2>$null
-if ($LASTEXITCODE -ne 0) {
-    aws iam create-role `
-        --role-name $RoleName `
-        --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}' | Out-Null
-}
+$roleArn = "arn:aws:iam::${accountId}:role/$RoleName"
+Write-Host "Using the existing Lambda execution role: $roleArn"
 
-Write-Host "Step 2: attach the basic execution policy and S3 access"
-aws iam attach-role-policy --role-name $RoleName --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole | Out-Null
-$fullS3AccessArn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
-$attachedPolicies = aws iam list-attached-role-policies --role-name $RoleName --query "AttachedPolicies[?PolicyArn=='$fullS3AccessArn'].PolicyArn" --output text
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to check the role's attached policies."
-}
-if ($attachedPolicies -and $attachedPolicies -ne "None") {
-    aws iam detach-role-policy --role-name $RoleName --policy-arn $fullS3AccessArn | Out-Null
-}
-$s3WritePolicy = @{
-    Version = "2012-10-17"
-    Statement = @(
-        @{
-            Effect = "Allow"
-            Action = @("s3:PutObject")
-            Resource = "arn:aws:s3:::$BucketName/*"
-        }
+Write-Host "Creating or updating the Lambda function in $Region"
+$functionCheck = Invoke-AwsCli -CliArgs @(
+    "lambda", "get-function",
+    "--function-name", $FunctionName,
+    "--region", $Region
+) -AllowFailure
+if ($functionCheck.ExitCode -ne 0) {
+    if ($functionCheck.Output -notmatch "\(ResourceNotFoundException\)") {
+        throw "Unable to check the Lambda function: $($functionCheck.Output)"
+    }
+    $null = Invoke-AwsCli -CliArgs @(
+        "lambda", "create-function",
+        "--function-name", $FunctionName,
+        "--region", $Region,
+        "--runtime", "python3.12",
+        "--role", $roleArn,
+        "--handler", "lambda_function.lambda_handler",
+        "--code", "S3Bucket=$BucketName,S3Key=$S3Key",
+        "--timeout", "120",
+        "--memory-size", "512",
+        "--environment", "Variables={S3_BUCKET_NAME=$BucketName}"
     )
-} | ConvertTo-Json -Depth 5 -Compress
-aws iam put-role-policy `
-    --role-name $RoleName `
-    --policy-name "stock-predictor-s3-write" `
-    --policy-document $s3WritePolicy | Out-Null
-
-$roleArn = aws iam get-role --role-name $RoleName --query 'Role.Arn' --output text
-
-Write-Host "Step 3: create or update the Lambda function"
-$functionArn = aws lambda get-function --function-name $FunctionName --region $Region 2>$null
-if ($LASTEXITCODE -ne 0) {
-    aws lambda create-function `
-        --function-name $FunctionName `
-        --region $Region `
-        --runtime python3.12 `
-        --role $roleArn `
-        --handler lambda_function.lambda_handler `
-        --zip-file fileb://$ZipPath `
-        --timeout 120 `
-        --memory-size 512 `
-        --environment "Variables={S3_BUCKET_NAME=$BucketName}" | Out-Null
 } else {
-    aws lambda update-function-code --function-name $FunctionName --region $Region --zip-file fileb://$ZipPath | Out-Null
-    aws lambda update-function-configuration `
-        --function-name $FunctionName `
-        --region $Region `
-        --runtime python3.12 `
-        --handler lambda_function.lambda_handler `
-        --role $roleArn `
-        --timeout 120 `
-        --memory-size 512 `
-        --environment "Variables={S3_BUCKET_NAME=$BucketName}" | Out-Null
+    $null = Invoke-AwsCli -CliArgs @(
+        "lambda", "update-function-code",
+        "--function-name", $FunctionName,
+        "--region", $Region,
+        "--s3-bucket", $BucketName,
+        "--s3-key", $S3Key
+    )
+    $null = Invoke-AwsCli -CliArgs @(
+        "lambda", "update-function-configuration",
+        "--function-name", $FunctionName,
+        "--region", $Region,
+        "--runtime", "python3.12",
+        "--handler", "lambda_function.lambda_handler",
+        "--role", $roleArn,
+        "--timeout", "120",
+        "--memory-size", "512",
+        "--environment", "Variables={S3_BUCKET_NAME=$BucketName}"
+    )
 }
 
-Write-Host "Step 4: this is the first real AWS milestone"
+Write-Host "Deployment complete"
 Write-Host "The Lambda is now configured to fetch stock data and save it to S3."
 Write-Host "Next, run the invoke script to test it manually."
