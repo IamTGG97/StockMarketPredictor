@@ -2,7 +2,8 @@ param(
     [string]$FunctionName = "stock-ingest-lambda",
     [string]$Symbol = "AAPL",
     [string]$StartDate = "2024-01-01",
-    [string]$EndDate = "2024-01-30"
+    [string]$EndDate = "2024-01-30",
+    [string]$Region = "us-east-2"
 )
 
 Write-Host "Step 1: test the Lambda manually before scheduling it"
@@ -14,6 +15,7 @@ $payload = @{
 
 aws lambda invoke `
     --function-name $FunctionName `
+    --region $Region `
     --cli-binary-format raw-in-base64-out `
     --payload $payload `
     response.json | Out-Null

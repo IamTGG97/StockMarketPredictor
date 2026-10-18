@@ -58,27 +58,29 @@ aws iam put-role-policy `
 $roleArn = aws iam get-role --role-name $RoleName --query 'Role.Arn' --output text
 
 Write-Host "Step 3: create or update the Lambda function"
-$functionArn = aws lambda get-function --function-name $FunctionName 2>$null
+$functionArn = aws lambda get-function --function-name $FunctionName --region $Region 2>$null
 if ($LASTEXITCODE -ne 0) {
     aws lambda create-function `
         --function-name $FunctionName `
+        --region $Region `
         --runtime python3.12 `
         --role $roleArn `
         --handler lambda_function.lambda_handler `
         --zip-file fileb://$ZipPath `
         --timeout 120 `
         --memory-size 512 `
-        --environment "Variables={S3_BUCKET_NAME=$BucketName,AWS_REGION=$Region}" | Out-Null
+        --environment "Variables={S3_BUCKET_NAME=$BucketName}" | Out-Null
 } else {
-    aws lambda update-function-code --function-name $FunctionName --zip-file fileb://$ZipPath | Out-Null
+    aws lambda update-function-code --function-name $FunctionName --region $Region --zip-file fileb://$ZipPath | Out-Null
     aws lambda update-function-configuration `
         --function-name $FunctionName `
+        --region $Region `
         --runtime python3.12 `
         --handler lambda_function.lambda_handler `
         --role $roleArn `
         --timeout 120 `
         --memory-size 512 `
-        --environment "Variables={S3_BUCKET_NAME=$BucketName,AWS_REGION=$Region}" | Out-Null
+        --environment "Variables={S3_BUCKET_NAME=$BucketName}" | Out-Null
 }
 
 Write-Host "Step 4: this is the first real AWS milestone"
