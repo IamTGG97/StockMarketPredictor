@@ -11,6 +11,9 @@ $temporaryPath = "$OutputPath.tmp"
 if (-not (Test-Path (Join-Path $PSScriptRoot "..\lambda_function.py"))) {
     throw "lambda_function.py was not found in the repository."
 }
+if (-not (Test-Path (Join-Path $PSScriptRoot "..\lambda_dispatcher.py"))) {
+    throw "lambda_dispatcher.py was not found in the repository."
+}
 if (-not (Test-Path (Join-Path $PSScriptRoot "..\utils\market_api.py"))) {
     throw "utils\market_api.py was not found in the repository."
 }
@@ -48,6 +51,7 @@ try {
 
     $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
     Add-PackageFile (Join-Path $repositoryRoot "lambda_function.py") "lambda_function.py"
+    Add-PackageFile (Join-Path $repositoryRoot "lambda_dispatcher.py") "lambda_dispatcher.py"
     Get-ChildItem -Path (Join-Path $repositoryRoot "utils") -Filter "*.py" -File -Recurse | ForEach-Object {
         $relativePath = $_.FullName.Substring($repositoryRoot.Length).TrimStart("\").Replace("\", "/")
         Add-PackageFile $_.FullName $relativePath
@@ -61,7 +65,13 @@ finally {
 $checkArchive = [System.IO.Compression.ZipFile]::OpenRead($temporaryPath)
 try {
     $uncompressedBytes = [long](($checkArchive.Entries | Measure-Object -Property Length -Sum).Sum)
-    foreach ($requiredPath in @("lambda_function.py", "utils/market_api.py", "utils/storage.py")) {
+    foreach ($requiredPath in @(
+        "lambda_function.py",
+        "lambda_dispatcher.py",
+        "utils/market_api.py",
+        "utils/storage.py",
+        "utils/sp500_symbols.py"
+    )) {
         if (-not $checkArchive.GetEntry($requiredPath)) {
             throw "Lambda package is missing $requiredPath."
         }

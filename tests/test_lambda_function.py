@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from lambda_function import lambda_handler
+from lambda_function import lambda_handler, sqs_worker_handler
 
 
 class TestLambdaFunction(unittest.TestCase):
@@ -43,6 +43,31 @@ class TestLambdaFunction(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             with patch.dict(os.environ, {}, clear=True):
                 lambda_handler({"symbol": "AAPL"}, None)
+
+    @patch("lambda_function.lambda_handler")
+    def test_sqs_worker_passes_single_message_to_existing_handler(self, handler):
+        event = {
+            "Records": [
+                {
+                    "body": '{"symbol":"AAPL","start_date":"2026-09-01","end_date":"2026-09-30"}'
+                }
+            ]
+        }
+
+        sqs_worker_handler(event, None)
+
+        handler.assert_called_once_with(
+            {
+                "symbol": "AAPL",
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-30",
+            },
+            None,
+        )
+
+    def test_sqs_worker_requires_single_record(self):
+        with self.assertRaisesRegex(ValueError, "batch size of one"):
+            sqs_worker_handler({"Records": []}, None)
 
 
 if __name__ == "__main__":
