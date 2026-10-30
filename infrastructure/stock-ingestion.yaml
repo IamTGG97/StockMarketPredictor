@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Scheduled S&P 500 market data ingestion with SQS retries and S3 storage.
+
+Parameters:
+  ArtifactBucket:
+    Type: String
+    Description: Existing S3 bucket that contains the Lambda deployment package.
+  ArtifactKey:
+    Type: String
+    Description: S3 key for the Lambda deployment package.
+  DataBucketName:
+    Type: String
+    Description: Existing S3 bucket where market data will be stored.
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - ENABLED
+      - DISABLED
+    Description: Keep disabled for the first deployment; enable after manual verification.
+
+Resources:
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-dead-letter"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  IngestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-work"
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 720
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  DispatcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: SendIngestionMessages
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt IngestQueue.Arn
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: ReadQueueAndWriteMarketData
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt IngestQueue.Arn
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/raw/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/processed/*"
+
+  DispatcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-dispatcher"
+      Runtime: python3.12
+      Handler: lambda_dispatcher.lambda_handler
+      Role: !GetAtt DispatcherRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref IngestQueue
+
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-worker"
+      Runtime: python3.12
+      Handler: lambda_function.sqs_worker_handler
+      Role: !GetAtt WorkerRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref DataBucketName
+
+  WorkerEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !GetAtt WorkerFunction.Arn
+      EventSourceArn: !GetAtt IngestQueue.Arn
+      Enabled: true
+      BatchSize: 1
+      ScalingConfig:
+        MaximumConcurrency: 5
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeDispatcher
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt DispatcherFunction.Arn
+
+  WeekdaySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-weekday-ingestion"
+      Description: Queue S&P 500 ingestion jobs on weekdays after market close.
+      State: !Ref ScheduleState
+      ScheduleExpression: "cron(0 17 ? * MON-FRI *)"
+      ScheduleExpressionTimezone: America/New_York
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DispatcherFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{}"
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 3600
+          MaximumRetryAttempts: 2
+
+Outputs:
+  WorkQueueUrl:
+    Description: SQS queue URL for individual stock ingestion jobs.
+    Value: !Ref IngestQueue
+  DeadLetterQueueUrl:
+    Description: SQS queue URL for jobs that exhausted their retries.
+    Value: !Ref DeadLetterQueue
+  DispatcherFunctionName:
+    Value: !Ref DispatcherFunction
+  WorkerFunctionName:
+    Value: !Ref WorkerFunction
+  ScheduleName:
+    Value: !Ref WeekdaySchedule
+    Description: EventBridge Scheduler schedule name.
