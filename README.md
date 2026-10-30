@@ -44,13 +44,23 @@ The script packages both handlers, uploads the package to S3 under a unique key,
 The schedule defaults to `DISABLED` so you can inspect the stack and test ingestion manually before it starts running automatically. First send a single test job to the work queue using the `WorkQueueUrl` output:
 
 ```powershell
+$testPayloadPath = Join-Path $env:TEMP "stock-ingestion-test.json"
 $testMessage = @{
     symbol = "AAPL"
     start_date = (Get-Date).AddDays(-30).ToString("yyyy-MM-dd")
     end_date = (Get-Date).ToString("yyyy-MM-dd")
 } | ConvertTo-Json -Compress
+[System.IO.File]::WriteAllText(
+    $testPayloadPath,
+    $testMessage,
+    (New-Object System.Text.UTF8Encoding($false))
+)
 
-aws sqs send-message --queue-url "<WorkQueueUrl>" --message-body $testMessage --region us-east-2
+aws sqs send-message `
+    --queue-url "<WorkQueueUrl>" `
+    --message-body "file://$testPayloadPath" `
+    --region us-east-2
+Remove-Item -LiteralPath $testPayloadPath
 ```
 
 The worker Lambda is triggered by SQS; do not invoke it directly with a plain symbol payload. Once the single-ticker test writes objects to S3, you can invoke the dispatcher manually to enqueue the S&P 500:
