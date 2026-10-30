@@ -10,7 +10,8 @@ A Flask dashboard that fetches historical stock prices, displays a simple foreca
 - S3 storage of raw JSON and processed CSV market data.
 - Lambda dispatcher that looks up S&P 500 constituents and sends one message per ticker to SQS.
 - Lambda worker that fetches one ticker per SQS message and writes its data to S3.
-- CloudFormation stack for the SQS work queue and dead-letter queue, the two Lambdas, least-privilege execution roles, and the weekday schedule.
+- Public API Gateway HTTP API serving the Flask dashboard and stock-data endpoint, with request throttling and a Lambda concurrency cap.
+- CloudFormation stack for the API, SQS work queue and dead-letter queue, three Lambdas, least-privilege execution roles, and the weekday schedule.
 
 ## Deploy the AWS ingestion stack
 
@@ -27,21 +28,30 @@ Build the dependency directory:
 .\scripts\build_lambda_dependencies.ps1
 ```
 
-Deploy the stack with the schedule **disabled** first:
+For a first deployment, deploy the stack with the schedule **disabled** so you can test it before automatic ingestion begins:
 
 ```powershell
-.\scripts\deploy_ingestion.ps1 -BucketName YOUR_EXISTING_BUCKET
+.\scripts\deploy_ingestion.ps1 -BucketName YOUR_EXISTING_BUCKET -ScheduleState DISABLED
 ```
 
-The script packages both handlers, uploads the package to S3 under a unique key, and deploys `infrastructure/stock-ingestion.yaml`. The artifact bucket must be in the same AWS region as the Lambda functions. CloudFormation creates:
+Build the Lambda dependencies first (including Flask and Gunicorn), then deploy:
+
+```powershell
+.\scripts\build_lambda_dependencies.ps1
+.\scripts\deploy_ingestion.ps1 -BucketName YOUR_EXISTING_BUCKET -ScheduleState DISABLED
+```
+
+The script packages the ingestion handlers, Flask app, static assets, and dependencies; uploads them to S3 under a unique key; and deploys `infrastructure/stock-ingestion.yaml`. The artifact bucket must be in the same AWS region as the Lambda functions. CloudFormation creates:
 
 1. An encrypted SQS work queue and a dead-letter queue. Messages are retried up to three receives before moving to the DLQ.
 2. A dispatcher Lambda with permission to send jobs to the work queue.
 3. A worker Lambda with permission to consume the queue and write only to the `raw/` and `processed/` prefixes of the configured bucket.
-4. An SQS event source mapping with batch size one and a maximum concurrency of five workers.
-5. An EventBridge Scheduler schedule for 5:00 PM on weekdays in `America/New_York`.
+4. A separate Flask API Lambda using the AWS Lambda Web Adapter, with write access only to the market-data prefixes.
+5. A public API Gateway HTTP API that serves the dashboard and `/api/stock_data` from the same origin. It allows up to 2 requests per second with a burst of 10. No login is required.
+6. An SQS event source mapping with batch size one and a maximum concurrency of five workers.
+7. An EventBridge Scheduler schedule for 5:00 PM on weekdays in `America/New_York`.
 
-The schedule defaults to `DISABLED` so you can inspect the stack and test ingestion manually before it starts running automatically. First send a single test job to the work queue using the `WorkQueueUrl` output:
+The schedule defaults to `DISABLED` in the CloudFormation template. The deployment script defaults to `ENABLED` to preserve the currently enabled schedule when updating the live stack; explicitly pass `-ScheduleState DISABLED` for a first deployment or when you want to pause it. First send a single test job to the work queue using the `WorkQueueUrl` output:
 
 ```powershell
 $testPayloadPath = Join-Path $env:TEMP "stock-ingestion-test.json"
@@ -84,6 +94,16 @@ Replace the example queue URL, region, or function name if you used different de
 
 The schedule follows Eastern daylight/standard time. It runs on weekdays, including market holidays; the stock-data provider may return no data on those dates, and such messages can eventually be sent to the DLQ. The worker role grants writes to the configured S3 prefixes; if the bucket enforces a customer-managed KMS key, grant the worker role the required KMS permissions as well.
 
+After deployment, the stack outputs include `ApiEndpoint`, the public dashboard and API base URL. Verify the page and missing-parameter response:
+
+```powershell
+$api = "<ApiEndpoint>"
+Invoke-WebRequest "$api/"
+Invoke-RestMethod "$api/api/stock_data"
+```
+
+The first request should return the dashboard HTML; the second should return HTTP 400 because required query parameters are missing. To request stock data, provide `symbol`, `start_date`, and `end_date`, for example `"$api/api/stock_data?symbol=AAPL&start_date=2025-01-01&end_date=2025-02-01"`. A successful request fetches current provider data and writes raw and processed data to S3. The public endpoint can incur costs and is subject to API Gateway's configured request throttling; throttling is best-effort and not a hard usage quota. The current AWS account's Lambda concurrency quota is 10 shared executions, so the API Lambda does not reserve concurrency; consider requesting a quota increase before raising traffic. Do not share the URL as a production service.
+
 ### Updating or removing the stack
 
 Run the same deployment command again to update the stack. Each run uploads the deployment package to a new S3 object key so CloudFormation can detect code updates. Removing the CloudFormation stack deletes the queue, Lambdas, schedule, and roles; the existing S3 bucket is not managed by the stack and is not deleted.
@@ -112,7 +132,6 @@ python -m unittest discover -s tests
 
 ## Current limitations and possible next work
 
-- The Flask dashboard is a local/demo app; hosting it publicly and adding API Gateway are separate deployment tasks.
 - The forecast is a simple linear trend baseline, not investment advice or a validated trading model.
 - News sentiment is currently marked unavailable in the API response.
 - S&P 500 constituents are fetched from Wikipedia at dispatcher runtime, so the dispatcher needs outbound internet access and depends on that source being available.

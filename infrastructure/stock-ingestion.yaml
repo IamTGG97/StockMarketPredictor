@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Scheduled S&P 500 market data ingestion with SQS retries and S3 storage.
+Description: Public Flask stock dashboard and API with scheduled S&P 500 ingestion, SQS retries, and S3 storage.
 
 Parameters:
   ArtifactBucket:
@@ -121,6 +121,51 @@ Resources:
         Variables:
           S3_BUCKET_NAME: !Ref DataBucketName
 
+  ApiFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: WriteMarketData
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/raw/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/processed/*"
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-api"
+      Runtime: python3.12
+      Handler: run.sh
+      Architectures:
+        - x86_64
+      Role: !GetAtt ApiFunctionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+      Timeout: 30
+      MemorySize: 512
+      Layers:
+        - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30"
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          AWS_LWA_PORT: "8080"
+          S3_BUCKET_NAME: !Ref DataBucketName
+
   WorkerEventSource:
     Type: AWS::Lambda::EventSourceMapping
     Properties:
@@ -130,6 +175,54 @@ Resources:
       BatchSize: 1
       ScalingConfig:
         MaximumConcurrency: 5
+
+  StockApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      ProtocolType: HTTP
+      Description: Public HTTP API for the Flask stock dashboard and data endpoint.
+
+  StockApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref StockApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  StockApiRootRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref StockApi
+      RouteKey: "ANY /"
+      Target: !Sub "integrations/${StockApiIntegration}"
+
+  StockApiProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref StockApi
+      RouteKey: "ANY /{proxy+}"
+      Target: !Sub "integrations/${StockApiIntegration}"
+
+  StockApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref StockApi
+      StageName: "$default"
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 2
+
+  ApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ApiFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${StockApi}/*/*"
 
   SchedulerRole:
     Type: AWS::IAM::Role
@@ -182,3 +275,6 @@ Outputs:
   ScheduleName:
     Value: !Ref WeekdaySchedule
     Description: EventBridge Scheduler schedule name.
+  ApiEndpoint:
+    Description: Public HTTP API and dashboard URL.
+    Value: !GetAtt StockApi.ApiEndpoint

@@ -4,7 +4,7 @@ param(
     [string]$Region = "us-east-2",
     [string]$StackName = "stock-market-ingestion",
     [ValidateSet("ENABLED", "DISABLED")]
-    [string]$ScheduleState = "DISABLED",
+    [string]$ScheduleState = "ENABLED",
     [string]$BuildDirectory = (Join-Path $PSScriptRoot "..\.lambda-build"),
     [string]$ZipPath = (Join-Path $PSScriptRoot "..\lambda-deployment.zip")
 )
@@ -25,7 +25,7 @@ $TemplatePath = [System.IO.Path]::GetFullPath(
 )
 $PackageScript = Join-Path $PSScriptRoot "package_lambda.ps1"
 
-Write-Host "Step 1: package both Lambda handlers and their dependencies"
+Write-Host "Step 1: package Lambda handlers, the API app, assets, and dependencies"
 & $PackageScript -BuildDirectory $BuildDirectory -OutputPath $ZipPath
 if (-not (Test-Path -LiteralPath $ZipPath)) {
     throw "Lambda package was not created at $ZipPath."
@@ -64,4 +64,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Deployment complete. Schedule state: $ScheduleState"
-Write-Host "Review the stack outputs and CloudWatch logs before enabling the schedule."
+Write-Host "Verify the stack outputs and CloudWatch logs."
